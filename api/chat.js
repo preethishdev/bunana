@@ -1,0 +1,1 @@
+[Placeholder for chat.js content - you'll need to provide the actual content]
