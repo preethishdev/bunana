@@ -1,5 +1,7 @@
 export const config = { api: { bodyParser: true } };
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -8,25 +10,23 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not set in Vercel environment variables' });
+  if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not set' });
 
   const body = req.body || {};
   const messages = Array.isArray(body.messages) ? body.messages : [];
-  
   const userText = messages
     .filter(m => m.role === 'user')
     .map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content))
     .join('\n');
 
-  if (!userText) return res.status(400).json({ error: 'No message content provided' });
+  if (!userText) return res.status(400).json({ error: 'No message provided' });
 
   const models = [
-    'gemini-2.0-flash-lite',
-    'gemini-2.0-flash',
     'gemini-1.5-flash',
     'gemini-1.5-flash-latest',
     'gemini-1.5-flash-8b',
-    'gemini-pro'
+    'gemini-2.0-flash-lite',
+    'gemini-2.0-flash'
   ];
 
   for (const model of models) {
@@ -40,19 +40,29 @@ export default async function handler(req, res) {
           generationConfig: { temperature: 0.7, maxOutputTokens: 2000 }
         })
       });
+
       const data = await response.json();
-      console.log(`Model ${model}: status ${response.status}`);
+      console.log(`Model ${model}: ${response.status}`);
+
       if (response.ok) {
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
         return res.status(200).json({ content: [{ type: 'text', text }] });
       }
+
       const errCode = data.error?.code || response.status;
-      const errMsg = data.error?.message || 'Unknown error';
-      if (errCode === 404 || errMsg.includes('not found') || errMsg.includes('NOT_FOUND')) continue;
-      return res.status(200).json({ error: `API error with model ${model}: ${errMsg}`, code: errCode });
+      const errMsg = data.error?.message || '';
+
+      if (errCode === 429) { await sleep(1000); continue; }
+      if (errCode === 404 || errMsg.includes('not found')) continue;
+
+      return res.status(200).json({ error: `${model}: ${errMsg}`, code: errCode });
+
     } catch (err) {
       continue;
     }
   }
-  return res.status(200).json({ error: 'No Gemini models available for this API key. Please check your GEMINI_API_KEY in Vercel settings.' });
+
+  return res.status(200).json({ 
+    error: 'Rate limit reached. Please wait 1 minute and try again.' 
+  });
 }
