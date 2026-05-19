@@ -19,8 +19,18 @@ export default async function handler(req, res) {
 
   if (!userText) return res.status(400).json({ error: 'No message provided' });
 
-  const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
-  const enhancedPrompt = userText + '\n\nIMPORTANT: Return ONLY a valid JSON array. No markdown, no backticks, no explanation. Start with [ and end with ]';
+  // Detect if this is a recipe request or a translation request
+  const isRecipeRequest = userText.includes('Generate exactly 2 recipes');
+  const isTranslationRequest = userText.includes('multilingual ingredient translator');
+
+  // Only add JSON instruction for recipe requests — not translations
+  const finalPrompt = isRecipeRequest
+    ? userText + '\n\nCRITICAL: Your entire response must be ONLY a JSON array starting with [ and ending with ]. No text before or after. No markdown. No backticks.'
+    : userText;
+
+  // Use gemini-2.0-flash first — no thinking overhead, clean output
+  // Fall back to 2.5-flash and lite if needed
+  const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash'];
 
   for (const model of models) {
     try {
@@ -29,29 +39,47 @@ export default async function handler(req, res) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: enhancedPrompt }] }],
-          generationConfig: { temperature: 0.7, maxOutputTokens: 8192 }
+          contents: [{ role: 'user', parts: [{ text: finalPrompt }] }],
+          generationConfig: {
+            temperature: isTranslationRequest ? 0.1 : 0.7,
+            maxOutputTokens: isRecipeRequest ? 8192 : 100
+          }
         })
       });
 
       const data = await response.json();
 
       if (response.ok) {
-        let text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-        text = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
-        const start = text.indexOf('[');
-        if (start > 0) text = text.substring(start);
-        const end = text.lastIndexOf(']');
-        if (end !== -1) text = text.substring(0, end + 1);
+        // Join ALL parts — handles thinking models that split response
+        const parts = data.candidates?.[0]?.content?.parts || [];
+        let text = parts
+          .filter(p => !p.thought) // exclude thinking tokens from gemini-2.5
+          .map(p => p.text || '')
+          .join('')
+          .trim();
+
+        if (isRecipeRequest) {
+          // Strip any markdown fences
+          text = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+          // Extract just the JSON array
+          const start = text.indexOf('[');
+          const end = text.lastIndexOf(']');
+          if (start !== -1 && end !== -1 && end > start) {
+            text = text.substring(start, end + 1);
+          }
+        }
+
         return res.status(200).json({ content: [{ type: 'text', text }] });
       }
 
       const errCode = data.error?.code || response.status;
+      const errMsg = data.error?.message || '';
       if (errCode === 429) { await new Promise(r => setTimeout(r, 1500)); continue; }
-      if (errCode === 404) continue;
-      return res.status(200).json({ error: data.error?.message || 'API error' });
+      if (errCode === 404 || errMsg.includes('not found')) continue;
+      return res.status(200).json({ error: errMsg || 'API error' });
 
     } catch (err) { continue; }
   }
+
   return res.status(200).json({ error: 'All models unavailable. Please try again in 1 minute.' });
 }
