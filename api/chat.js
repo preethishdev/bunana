@@ -81,5 +81,5 @@ export default async function handler(req, res) {
     } catch (err) { continue; }
   }
 
-  return res.status(200).json({ error: 'All models unavailable. Please try again in 1 minute.' });
+  return res.status(429).json({ error: 'Rate limit reached. Please wait 1 minute and try again.' });
 }
