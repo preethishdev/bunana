@@ -1,49 +1,62 @@
-// api/test.js — temporary test endpoint
-// Visit /api/test to see if the Gemini API key is working
+// api/test.js — diagnostic endpoint
 export default async function handler(req, res) {
   const apiKey = process.env.GEMINI_API_KEY;
   
   if (!apiKey) {
-    return res.status(200).json({ 
-      status: 'ERROR', 
-      message: 'GEMINI_API_KEY environment variable is not set' 
-    });
+    return res.status(200).json({ status: 'NO_KEY', message: 'GEMINI_API_KEY not set in environment' });
   }
 
+  // List available models
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+    const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
+    const listResp = await fetch(listUrl);
+    const listData = await listResp.json();
     
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: 'Say the word: working' }] }],
-        generationConfig: { maxOutputTokens: 10 }
-      })
-    });
-
-    const data = await response.json();
-    
-    if (!response.ok) {
+    if (!listResp.ok) {
       return res.status(200).json({ 
-        status: 'API_ERROR', 
-        code: response.status,
-        error: data.error?.message || 'Unknown error',
-        details: data.error
+        status: 'KEY_ERROR', 
+        keyPrefix: apiKey.substring(0,12)+'...',
+        error: listData.error?.message,
+        code: listData.error?.code
       });
     }
 
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const models = (listData.models || [])
+      .filter(m => m.name.includes('gemini'))
+      .map(m => m.name);
+
+    // Try first available model
+    if (models.length > 0) {
+      const modelName = models[0].replace('models/', '');
+      const testUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+      const testResp = await fetch(testUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: 'Say: working' }] }],
+          generationConfig: { maxOutputTokens: 5 }
+        })
+      });
+      const testData = await testResp.json();
+      const text = testData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      
+      return res.status(200).json({
+        status: testResp.ok ? 'SUCCESS' : 'MODEL_ERROR',
+        keyPrefix: apiKey.substring(0,12)+'...',
+        availableModels: models,
+        testedModel: modelName,
+        response: text,
+        error: testResp.ok ? null : testData.error?.message
+      });
+    }
+
     return res.status(200).json({ 
-      status: 'SUCCESS', 
-      response: text,
-      keyPrefix: apiKey.substring(0, 10) + '...'
+      status: 'NO_MODELS', 
+      keyPrefix: apiKey.substring(0,12)+'...',
+      availableModels: [] 
     });
 
   } catch (err) {
-    return res.status(200).json({ 
-      status: 'FETCH_ERROR', 
-      message: err.message 
-    });
+    return res.status(200).json({ status: 'FETCH_ERROR', message: err.message });
   }
 }
