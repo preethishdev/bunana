@@ -1,7 +1,5 @@
 export const config = { api: { bodyParser: true } };
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -21,15 +19,9 @@ export default async function handler(req, res) {
 
   if (!userText) return res.status(400).json({ error: 'No message provided' });
 
-  const models = [
-    'gemini-1.5-flash',
-    'gemini-1.5-flash-latest',
-    'gemini-1.5-flash-8b',
-    'gemini-2.0-flash-lite',
-    'gemini-2.0-flash'
-  ];
+  const models = ['gemini-2.5-flash','gemini-2.0-flash','gemini-2.0-flash-lite','gemini-flash-latest'];
 
-  const enhancedPrompt = userText + '\n\nCRITICAL: Return ONLY a raw JSON array. No markdown, no backticks, no explanation. Start your response with [ and end with ]';
+  const enhancedPrompt = userText + '\n\nIMPORTANT: Return ONLY a valid JSON array. No markdown, no backticks, no explanation. Start with [ and end with ]';
 
   for (const model of models) {
     try {
@@ -39,33 +31,29 @@ export default async function handler(req, res) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ role: 'user', parts: [{ text: enhancedPrompt }] }],
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 2000,
-            responseMimeType: 'application/json'
-          }
+          generationConfig: { temperature: 0.7, maxOutputTokens: 2000 }
         })
       });
 
       const data = await response.json();
-      console.log(`Model ${model}: ${response.status}`);
 
       if (response.ok) {
         let text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
         text = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
-        const jsonStart = text.indexOf('[');
-        if (jsonStart > 0) text = text.substring(jsonStart);
+        const start = text.indexOf('[');
+        if (start > 0) text = text.substring(start);
+        const end = text.lastIndexOf(']');
+        if (end !== -1 && end < text.length - 1) text = text.substring(0, end + 1);
         return res.status(200).json({ content: [{ type: 'text', text }] });
       }
 
       const errCode = data.error?.code || response.status;
-      const errMsg = data.error?.message || '';
-      if (errCode === 429) { await sleep(1500); continue; }
-      if (errCode === 404 || errMsg.includes('not found')) continue;
-      return res.status(200).json({ error: `${model}: ${errMsg}` });
+      if (errCode === 429) { await new Promise(r => setTimeout(r, 1500)); continue; }
+      if (errCode === 404) continue;
+      return res.status(200).json({ error: data.error?.message || 'API error' });
 
     } catch (err) { continue; }
   }
 
-  return res.status(200).json({ error: 'Rate limit reached. Please wait 1 minute and try again.' });
+  return res.status(200).json({ error: 'All models unavailable. Please try again in 1 minute.' });
 }
