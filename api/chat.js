@@ -1,6 +1,5 @@
 // api/chat.js — Vercel Serverless Function
 // Secure proxy between Bunana and Google Gemini API
-// Your API key stays here on the server — users never see it.
 
 export default async function handler(req, res) {
 
@@ -23,17 +22,20 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Extract the user message from the Anthropic-style request body
+    // Extract messages from request body
     const messages = req.body.messages || [];
-    const userMessage = messages.map(m => m.content).join('\n');
+    
+    // Build Gemini contents array properly
+    const contents = messages.map(m => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) }]
+    }));
 
-    // Call Gemini API
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+    // Use gemini-1.5-flash — stable, fast, free tier
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
 
     const geminiBody = {
-      contents: [{
-        parts: [{ text: userMessage }]
-      }],
+      contents: contents,
       generationConfig: {
         temperature: 0.7,
         maxOutputTokens: 2000
@@ -49,10 +51,14 @@ export default async function handler(req, res) {
     const data = await response.json();
 
     if (!response.ok) {
-      return res.status(response.status).json({ error: data.error?.message || 'Gemini API error' });
+      console.error('Gemini error:', JSON.stringify(data));
+      return res.status(response.status).json({ 
+        error: data.error?.message || 'Gemini API error',
+        details: data 
+      });
     }
 
-    // Convert Gemini response to Anthropic-style format so Bunana works without changes
+    // Convert to Anthropic-style response so Bunana works without changes
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
     return res.status(200).json({
@@ -60,6 +66,7 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
+    console.error('Proxy error:', error);
     return res.status(500).json({ error: 'Proxy error: ' + error.message });
   }
 }
