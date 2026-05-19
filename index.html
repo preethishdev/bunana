@@ -861,7 +861,78 @@ function loadPantry(){try{const s=localStorage.getItem('bunana_pantry');if(s)pan
 function renderPantryGrids(){function mc(items,key,gridId,isEquip){const grid=document.getElementById(gridId);grid.innerHTML='';items.forEach(item=>{const label=isEquip?item.label:item;const checked=pantryState[key].includes(label);const div=document.createElement('div');div.className=(isEquip?'equip-chip':'check-chip')+(checked?' checked':'');div.innerHTML=isEquip?'<i class="ti '+item.icon+'" style="font-size:16px"></i>'+item.label:(checked?'<i class="ti ti-check" style="font-size:13px"></i>':'')+item;div.onclick=()=>{const arr=pantryState[key];const idx=arr.indexOf(label);if(idx>-1)arr.splice(idx,1);else arr.push(label);renderPantryGrids();};grid.appendChild(div);});}mc(STAPLES,'staples','staplesGrid',false);mc(OILS,'oils','oilsGrid',false);mc(DAIRY,'dairy','dairyGrid',false);mc(EQUIP,'equip','equipGrid',true);}
 function renderCustomItems(){const wrap=document.getElementById('customItemsWrap');wrap.innerHTML='';(pantryState.custom||[]).forEach((item,i)=>{const tag=document.createElement('div');tag.className='custom-tag';tag.innerHTML=item.display+(item.original&&item.original!==item.display?' <span style="font-size:11px;opacity:.7">('+item.original+')</span>':'')+'<span class="custom-tag-x" onclick="removeCustomItem('+i+')">&#215;</span>';wrap.appendChild(tag);});}
 function removeCustomItem(i){pantryState.custom.splice(i,1);renderCustomItems();}
-async function translateToEnglish(text){const prompt='You are a multilingual ingredient translator. The user typed: "'+text+'". Return ONLY the English ingredient name - short phrase, no explanation.';const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:20,messages:[{role:'user',content:prompt}]})});const data=await res.json();return (data.content||[]).map(b=>b.text||'').join('').trim().toLowerCase().replace(/[.!?]$/,'');}
+// ── BATCH TRANSLATION ENGINE ──
+// Queues ingredients and translates them all in ONE API call to save rate limit quota
+var _translateQueue = [];
+var _translateTimer = null;
+var _translateCallbacks = {};
+var _translateCounter = 0;
+
+async function translateToEnglish(text) {
+  return new Promise(function(resolve) {
+    var id = ++_translateCounter;
+    _translateCallbacks[id] = resolve;
+    _translateQueue.push({ id: id, text: text });
+    // Debounce: wait 300ms for more ingredients to queue up, then translate all at once
+    clearTimeout(_translateTimer);
+    _translateTimer = setTimeout(function() { flushTranslateQueue(); }, 300);
+  });
+}
+
+async function flushTranslateQueue() {
+  if (!_translateQueue.length) return;
+  var batch = _translateQueue.slice();
+  _translateQueue = [];
+
+  var items = batch.map(function(b){ return '"' + b.text + '"'; }).join(', ');
+  var prompt = 'You are a multilingual ingredient translator. ' +
+    'Translate each of these ingredients to English. ' +
+    'Return ONLY a JSON object like {"1":"translation1","2":"translation2"} — no other text. ' +
+    'Ingredients: ' + items;
+
+  try {
+    var res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 200,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+    var data = await res.json();
+    var raw = (data.content||[]).map(function(b){return b.text||'';}).join('').trim();
+    raw = raw.replace(/```json/gi,'').replace(/```/g,'').trim();
+
+    var translations = {};
+    try { translations = JSON.parse(raw); } catch(e) {
+      // If JSON parse fails, try to extract key-value pairs
+      var matches = raw.match(/"(\d+)"\s*:\s*"([^"]+)"/g) || [];
+      matches.forEach(function(m) {
+        var parts = m.match(/"(\d+)"\s*:\s*"([^"]+)"/);
+        if (parts) translations[parts[1]] = parts[2];
+      });
+    }
+
+    // Resolve each queued item with its translation
+    batch.forEach(function(item, idx) {
+      var key = String(idx + 1);
+      var translation = translations[key] || translations[String(item.id)] || item.text;
+      translation = translation.toLowerCase().replace(/[.!?,\[\]"']/g,'').trim();
+      var cb = _translateCallbacks[item.id];
+      delete _translateCallbacks[item.id];
+      if (cb) cb(translation);
+    });
+
+  } catch(e) {
+    // On error, resolve all with original text
+    batch.forEach(function(item) {
+      var cb = _translateCallbacks[item.id];
+      delete _translateCallbacks[item.id];
+      if (cb) cb(item.text.toLowerCase());
+    });
+  }
+}
 async function addCustomItem(){const input=document.getElementById('customInput');const btn=document.getElementById('customAddBtn');const raw=input.value.trim();if(!raw)return;input.value='';btn.disabled=true;btn.innerHTML='<i class="ti ti-loader spin"></i> Translating...';try{const english=await translateToEnglish(raw);const display=english||raw.toLowerCase();pantryState.custom.push({display,original:raw.toLowerCase()!==display?raw:null});renderCustomItems();}catch(e){pantryState.custom.push({display:raw.toLowerCase(),original:null});renderCustomItems();}btn.disabled=false;btn.innerHTML='<i class="ti ti-plus"></i> Add';}
 document.getElementById('customInput').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();addCustomItem();}});
 function savePantry(){try{localStorage.setItem('bunana_pantry',JSON.stringify(pantryState));}catch(e){}updatePantryBar();closePantry();}
