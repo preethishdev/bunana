@@ -19,8 +19,7 @@ export default async function handler(req, res) {
 
   if (!userText) return res.status(400).json({ error: 'No message provided' });
 
-  const models = ['gemini-2.5-flash','gemini-2.0-flash','gemini-2.0-flash-lite','gemini-flash-latest'];
-
+  const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
   const enhancedPrompt = userText + '\n\nIMPORTANT: Return ONLY a valid JSON array. No markdown, no backticks, no explanation. Start with [ and end with ]';
 
   for (const model of models) {
@@ -31,7 +30,7 @@ export default async function handler(req, res) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ role: 'user', parts: [{ text: enhancedPrompt }] }],
-          generationConfig: { temperature: 0.7, maxOutputTokens: 2000 }
+          generationConfig: { temperature: 0.7, maxOutputTokens: 8192 }
         })
       });
 
@@ -43,7 +42,7 @@ export default async function handler(req, res) {
         const start = text.indexOf('[');
         if (start > 0) text = text.substring(start);
         const end = text.lastIndexOf(']');
-        if (end !== -1 && end < text.length - 1) text = text.substring(0, end + 1);
+        if (end !== -1) text = text.substring(0, end + 1);
         return res.status(200).json({ content: [{ type: 'text', text }] });
       }
 
@@ -54,6 +53,5 @@ export default async function handler(req, res) {
 
     } catch (err) { continue; }
   }
-
   return res.status(200).json({ error: 'All models unavailable. Please try again in 1 minute.' });
 }
