@@ -33,27 +33,16 @@ export default async function handler(req, res) {
           generationConfig: { temperature: 0.7, maxOutputTokens: 2000 }
         })
       });
-
       const data = await response.json();
-
       if (response.ok) {
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
         return res.status(200).json({ content: [{ type: 'text', text }] });
       }
-
-      if (data.error?.code === 404 || data.error?.status === 'NOT_FOUND') {
-        continue;
-      }
-
-      return res.status(response.status).json({ 
-        error: data.error?.message || 'API error',
-        model: model
-      });
-
+      if (data.error?.code === 404 || data.error?.status === 'NOT_FOUND') continue;
+      return res.status(response.status).json({ error: data.error?.message || 'API error' });
     } catch (err) {
       continue;
     }
   }
-
-  return res.status(500).json({ error: 'No available Gemini models found for this API key' });
+  return res.status(500).json({ error: 'No available Gemini models found' });
 }
