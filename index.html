@@ -277,6 +277,13 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--cream);color:v
 .dish-detail-path{font-size:12px;color:rgba(255,255,255,0.75);}
 .dish-detail-body{padding:18px;}
 
+/* ── UNCONFIRMED INGREDIENT TAGS ── */
+.itag-unconfirmed{background:#FFFBEB;border:1.5px dashed #D97706;color:#92400E;display:inline-flex;align-items:center;gap:5px;padding:5px 10px;border-radius:20px;font-size:13px;font-weight:500;margin:3px;animation:fadeIn .2s ease;}
+.itag-unconfirmed .unc-label{font-style:italic;}
+.itag-unconfirmed .unc-confirm{background:#D97706;color:#fff;border:none;border-radius:50%;width:18px;height:18px;font-size:11px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0;}
+.itag-unconfirmed .unc-confirm:hover{background:#B45309;}
+.itag-unconfirmed .unc-remove{background:rgba(217,119,6,0.15);color:#92400E;border:none;border-radius:50%;width:18px;height:18px;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.itag-unconfirmed .unc-remove:hover{background:rgba(217,119,6,0.3);}
 /* ── VOICE FEATURES (Phase 1) ── */
 .ing-input-row{display:flex;gap:8px;align-items:flex-start;}
 .ing-box{flex:1;}
@@ -866,7 +873,43 @@ const LIMIT=3;
 const ingBox=document.getElementById('ingBox');const iinput=document.getElementById('iinput');
 ingBox.addEventListener('click',()=>iinput.focus());
 iinput.addEventListener('keydown',async e=>{if((e.key==='Enter'||e.key===',')&&iinput.value.trim()){e.preventDefault();if(translating)return;const raw=iinput.value.replace(',','').trim();iinput.value='';await processIngredient(raw);}if(e.key==='Backspace'&&!iinput.value&&ings.length){ings.splice(ings.length-1,1);renderTags();}});
-async function processIngredient(raw){translating=true;const ph=document.createElement('div');ph.className='itag-translating';ph.innerHTML='<i class="ti ti-loader spin" style="font-size:13px"></i>'+raw+'...';ingBox.insertBefore(ph,iinput);let english=raw.toLowerCase(),wasTranslated=false;try{const r=await translateToEnglish(raw);if(r){const cleaned=r.toLowerCase().replace(/[\[\]"']/g,'').trim();if(cleaned&&cleaned!==raw.toLowerCase()){english=cleaned;wasTranslated=true;}else if(cleaned){english=cleaned;}}}catch(e){}ph.remove();translating=false;if(!english||ings.find(i=>i.english===english))return;ings.push({english,original:wasTranslated?raw:null});renderTags();}
+async function processIngredient(raw){
+  // Pre-classify before even calling translation API
+  var preClean = raw.toLowerCase().replace(/[.!?,;''`]+/g,'').trim();
+  var preClass = classifyIngredient(preClean);
+  if(preClass==='discard') return;
+  if(preClass==='stop'){ stopIngMic(true,'Mic turned off. Tap to start again.'); return; }
+
+  translating=true;
+  const ph=document.createElement('div');
+  ph.className='itag-translating';
+  ph.innerHTML='<i class="ti ti-loader spin" style="font-size:13px"></i>'+raw+'...';
+  ingBox.insertBefore(ph,iinput);
+  let english=raw.toLowerCase(),wasTranslated=false;
+  try{
+    const r=await translateToEnglish(raw);
+    if(r){
+      const cleaned=r.toLowerCase().replace(/[\[\]"']/g,'').trim();
+      if(cleaned&&cleaned!==raw.toLowerCase()){english=cleaned;wasTranslated=true;}
+      else if(cleaned){english=cleaned;}
+    }
+  }catch(e){}
+  ph.remove();
+  translating=false;
+
+  // Post-classify the translated result
+  var postClass = classifyIngredient(english);
+  if(postClass==='discard'||postClass==='stop') return;
+  if(ings.find(i=>i.english===english)) return; // duplicate
+
+  if(postClass==='confirm'){
+    // Show unconfirmed tag for user to verify
+    addUnconfirmedTag(raw, english);
+  } else {
+    ings.push({english,original:wasTranslated?raw:null});
+    renderTags();
+  }
+}
 function renderTags(){document.querySelectorAll('.itag').forEach(t=>t.remove());ings.forEach((ing,i)=>{const t=document.createElement('div');t.className='itag'+(ing.original?' itag-translated':'');t.innerHTML=(ing.original?ing.english+' <span style="font-size:11px;opacity:.75">('+ing.original+')</span>':ing.english)+'<span class="itag-x" onclick="removeIng('+i+')">&#215;</span>';ingBox.insertBefore(t,iinput);});}
 function removeIng(i){ings.splice(i,1);renderTags();}
 document.getElementById('cuisineChips').addEventListener('click',e=>{const c=e.target.closest('.chip');if(!c)return;document.querySelectorAll('#cuisineChips .chip').forEach(x=>x.classList.remove('on'));c.classList.add('on');cuisine=c.dataset.v;});
@@ -1159,10 +1202,10 @@ function startIngMicSession() {
         var raw = transcript.toLowerCase().trim();
 
         // Natural stop words — strip punctuation first then check
-        var cleanRaw = raw.replace(/[.!?,;]+$/g, '').trim();
-        var stopWords = ['stop','done','finish','enough','end','cancel','that is all','no more','that is it','ok done','okay done','stop listening','turn off'];
+        var cleanRaw = raw.replace(/[.!?,;]+$/g,'').replace(/[''`]/g,"").trim();
+        var stopWords = ['stop','done','finish','enough','end','cancel','that is all','thats all','no more','that is it','thats it','ok done','okay done','ok','stop listening','turn off','mic off','stop mic','finish mic'];
         if (stopWords.indexOf(cleanRaw) !== -1 ||
-            /(^)(stop|done|finish|enough|end|cancel|no more)($)/i.test(cleanRaw) ||
+            /(^)(stop|done|finish|enough|end|cancel|no more|thats all|thats it|ok)($)/i.test(cleanRaw) ||
             /\b(stop|done|finish|enough)\b/i.test(cleanRaw)) {
           stopIngMic(true, 'Mic turned off. Tap to start again.');
           return;
@@ -1317,7 +1360,7 @@ function startCookListening(stepIndex) {
   var rec = new SpeechRecognitionAPI();
   rec.continuous = false;
   rec.interimResults = false;
-  rec.lang = 'en-US';
+  rec.lang = navigator.language || 'en-US';
   
   var status = document.getElementById('cvbStatus');
   
@@ -1470,6 +1513,118 @@ exitCookMode = function() {
   _origExit();
 };
 
+
+
+// ── SMART INGREDIENT VALIDATION ──
+var NOISE_WORDS = new Set([
+  'um','uh','hmm','hm','ah','oh','er','err','like','so','and','the','a','an',
+  'i','me','my','please','can','could','would','ok','okay','yes','no','yeah',
+  'nah','hey','hi','hello','bunana','app','recipe','cook','food','make','want',
+  'need','have','got','get','use','using','with','for','just','also','then',
+  'next','more','some','bit','little','few','lot','much','many','put'
+]);
+
+var STOP_WORDS_SET = new Set([
+  // ── English ──
+  'stop','done','finish','finished','enough','end','cancel',
+  'thats all','that is all','thats it','that is it','no more',
+  'ok done','okay done','stop listening','turn off','mic off',
+  'stop mic','finish mic','stop now','all done','im done','i am done',
+  'got it','complete','completed','over','quit',
+
+  // ── Malayalam (മതി / നിർത്തൂ) ──
+  'mathi','madi','nirthoo','nirtha','nirthe','aakam','pokam',
+  'sheriyaayi','sheriyai','kazhinja','kazhinju','athre','athra',
+  'mathi aayittu','mathi ayittu','stop cheyyoo','ok mathi',
+  'venam','venda','venaad','vende',
+
+  // ── Tamil (நிறுத்து / போதும்) ──
+  'nirthu','nirthum','potum','podum','mudinja','mudinchu',
+  'sariya iruku','sari','mudivu','achu','poi vidu','stop panu',
+  'potum pa','potum ma','athu pothum','itu pothum',
+
+  // ── Hindi (बस / रुको) ──
+  'bas','ruko','rukja','band karo','band kar','rok','rokna',
+  'khatam','khatam karo','ho gaya','hogaya','theek hai','thik hai',
+  'bas karo','chodo','choodo','mat bolo','stop karo',
+
+  // ── Arabic (كفى / وقف) ──
+  'kafa','waqaf','khalas','xalas','halas','bass','yekfi',
+  'stop halas','stop bass','okaf','iqaf',
+
+  // ── Kannada (ಸಾಕು / ನಿಲ್ಲಿಸು) ──
+  'saaku','saku','nillisu','nillisudu','mugisu','aaytu','aitu',
+
+  // ── Telugu (ఆపు / చాలు) ──
+  'aapu','chalu','chaalu','aagipo','mugiyu','aipoindi',
+
+  // ── Urdu ──
+  'bas kar','ruk ja','khatam karo','band karo',
+
+  // ── French ──
+  'arrete','arretez','assez','fini','stop',
+
+  // ── Spanish ──
+  'para','basta','terminar','ya','suficiente',
+
+  // ── German ──
+  'stopp','aufhoren','fertig','genug','halt',
+
+  // ── Portuguese ──
+  'para','parar','chega','terminei','pronto'
+]);
+
+// Minimum plausible ingredient length
+var MIN_ING_LENGTH = 2;
+// Max reasonable ingredient length (words)
+var MAX_ING_WORDS = 6;
+
+function classifyIngredient(raw) {
+  var s = raw.toLowerCase().replace(/[.!?,;''`]+/g,'').trim();
+  if (!s || s.length < MIN_ING_LENGTH) return 'discard';
+  if (STOP_WORDS_SET.has(s)) return 'stop';
+  if (NOISE_WORDS.has(s)) return 'discard';
+  // Discard if only numbers
+  if (/^\d+$/.test(s)) return 'discard';
+  // Discard very long utterances (probably a sentence, not an ingredient)
+  if (s.split(' ').length > MAX_ING_WORDS) return 'discard';
+  // Discard if contains sentence-like patterns
+  if (/\b(can you|i want|please|thank|sorry|what|how|why|where|when)\b/i.test(s)) return 'discard';
+  // Flag for confirmation if contains numbers mixed with text (could be misheard)
+  if (/\d/.test(s) && /[a-z]/.test(s)) return 'confirm';
+  // Flag very short single-char strings
+  if (s.length === 1) return 'discard';
+  // Looks plausible — add directly
+  return 'add';
+}
+
+function addUnconfirmedTag(raw, english) {
+  var label = english !== raw ? english + ' (' + raw + ')' : raw;
+  var tag = document.createElement('div');
+  tag.className = 'itag-unconfirmed';
+  tag.dataset.english = english;
+  tag.dataset.original = raw;
+  tag.innerHTML =
+    '<span class="unc-label">&#10067; ' + label + '</span>' +
+    '<button class="unc-confirm" title="Keep this ingredient" onclick="confirmIngredient(this)">&#10003;</button>' +
+    '<button class="unc-remove" title="Remove this ingredient" onclick="removeUnconfirmed(this)">&#215;</button>';
+  ingBox.insertBefore(tag, iinput);
+}
+
+function confirmIngredient(btn) {
+  var tag = btn.closest('.itag-unconfirmed');
+  var english = tag.dataset.english;
+  var original = tag.dataset.original;
+  tag.remove();
+  if (english && !ings.find(function(i){return i.english===english;})) {
+    ings.push({ english: english, original: original !== english ? original : null });
+    renderTags();
+  }
+}
+function removeUnconfirmed(btn) {
+  var tag = btn.closest('.itag-unconfirmed');
+  if(tag) tag.remove();
+}
 
 updateCounter();loadPantry();renderBrowser();
 // ── JSON REPAIR ──
