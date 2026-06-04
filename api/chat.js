@@ -16,20 +16,30 @@ export default async function handler(req, res) {
     .filter(m => m.role === 'user')
     .map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content))
     .join('\n');
-
   if (!userText) return res.status(400).json({ error: 'No message provided' });
 
-  // Detect if this is a recipe request or a translation request
-  const isRecipeRequest = userText.includes('Generate exactly 2 recipes');
-  const isTranslationRequest = userText.includes('multilingual ingredient translator');
+  // Detect request type
+  const isRecipeRequest    = userText.includes('Generate exactly 2 recipes');
+  const isBrowseRequest    = userText.includes('Generate a detailed recipe for');
+  const isTranslationRequest = userText.includes('food ingredient translator') ||
+                               userText.includes('multilingual ingredient translator');
+  const isJsonRequest      = isRecipeRequest || isBrowseRequest;
 
-  // Only add JSON instruction for recipe requests — not translations
-  const finalPrompt = isRecipeRequest
-    ? userText + '\n\nCRITICAL: Your entire response must be ONLY a JSON array starting with [ and ending with ]. No text before or after. No markdown. No backticks.'
+  // Enforce clean JSON output for all JSON requests
+  const finalPrompt = isJsonRequest
+    ? userText +
+      '\n\nCRITICAL: Respond with ONLY valid JSON. ' +
+      (isRecipeRequest
+        ? 'The response MUST start with [ and end with ].'
+        : 'The response MUST start with { and end with }.') +
+      ' No markdown, no backticks, no explanation, no text before or after the JSON.'
     : userText;
 
-  // Use gemini-2.0-flash first — no thinking overhead, clean output
-  // Fall back to 2.5-flash and lite if needed
+  const maxTokens = isRecipeRequest ? 8192
+                  : isBrowseRequest  ? 3000
+                  : isTranslationRequest ? 500
+                  : 1000;
+
   const models = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash'];
 
   for (const model of models) {
@@ -42,30 +52,32 @@ export default async function handler(req, res) {
           contents: [{ role: 'user', parts: [{ text: finalPrompt }] }],
           generationConfig: {
             temperature: isTranslationRequest ? 0.1 : 0.7,
-            maxOutputTokens: isRecipeRequest ? 8192 : 100
-          }
-        })
+            maxOutputTokens: maxTokens,
+          },
+        }),
       });
 
       const data = await response.json();
 
       if (response.ok) {
-        // Join ALL parts — handles thinking models that split response
+        // Join all parts — handles thinking models that split response
         const parts = data.candidates?.[0]?.content?.parts || [];
         let text = parts
-          .filter(p => !p.thought) // exclude thinking tokens from gemini-2.5
+          .filter(p => !p.thought)
           .map(p => p.text || '')
           .join('')
           .trim();
 
-        if (isRecipeRequest) {
+        if (isJsonRequest) {
           // Strip any markdown fences
           text = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
-          // Extract just the JSON array
-          const start = text.indexOf('[');
-          const end = text.lastIndexOf(']');
-          if (start !== -1 && end !== -1 && end > start) {
-            text = text.substring(start, end + 1);
+          // Extract clean JSON boundary
+          if (isRecipeRequest) {
+            const s = text.indexOf('['), e = text.lastIndexOf(']');
+            if (s !== -1 && e > s) text = text.substring(s, e + 1);
+          } else if (isBrowseRequest) {
+            const s = text.indexOf('{'), e = text.lastIndexOf('}');
+            if (s !== -1 && e > s) text = text.substring(s, e + 1);
           }
         }
 
@@ -73,13 +85,24 @@ export default async function handler(req, res) {
       }
 
       const errCode = data.error?.code || response.status;
-      const errMsg = data.error?.message || '';
-      if (errCode === 429) { await new Promise(r => setTimeout(r, 1500)); continue; }
+      const errMsg  = data.error?.message || '';
+
+      if (errCode === 429) {
+        await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
       if (errCode === 404 || errMsg.includes('not found')) continue;
+
       return res.status(200).json({ error: errMsg || 'API error' });
 
-    } catch (err) { continue; }
+    } catch (err) {
+      continue;
+    }
   }
 
-  return res.status(429).json({ error: 'Rate limit reached. Please wait 1 minute and try again.' });
+  // All models exhausted — return structured 429 so frontend can show countdown
+  return res.status(429).json({
+    error: 'Rate limit reached. Bunana will auto-retry shortly.',
+    retryAfter: 15,
+  });
 }
