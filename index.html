@@ -615,7 +615,7 @@ function repairAndParseObject(raw){
   return JSON.parse(repairJSON(m[0]));
 }
 
-async function selectDish(dishName){const content=document.getElementById('browserContent');content.innerHTML='<div class="dish-detail"><div class="dish-detail-banner"><div class="dish-detail-name">'+dishName+'</div><div class="dish-detail-path">'+browserPath.join(' > ')+'</div></div><div class="dish-detail-body"><div class="empty"><i class="ti ti-chef-hat spin"></i><p>Generating recipe for '+dishName+'...</p></div></div></div>';const prompt='You are Bunana. Generate a detailed recipe for: '+dishName+' ('+browserPath.join(' > ')+').\nReturn ONLY valid JSON object, no markdown.\n{"name":"","cuisine":"","time":"","difficulty":"","servings":"","description":"","ingredients":[""],"steps":[""],"nutrition":{"calories":"","protein":"","carbs":"","fat":""},"tip":""}';try{const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:2000,messages:[{role:'user',content:prompt}]})});const data=await res.json();if(!res.ok||data.error){throw new Error(data.error||'API error.');}const raw=(data.content||[]).map(b=>b.text||'').join('').replace(/```json|```/g,'').trim();if(!raw){throw new Error('No response from AI.');}let r;try{r=repairAndParseObject(raw);}catch(e){throw new Error('Could not read recipe.');}if(!r)throw new Error('No recipe returned');renderDishDetail(r,dishName);}catch(e){content.innerHTML='<div class="err show">Could not load recipe. Please try again.</div>';}}
+async function selectDish(dishName){const content=document.getElementById('browserContent');content.innerHTML='<div class="dish-detail"><div class="dish-detail-banner"><div class="dish-detail-name">'+dishName+'</div><div class="dish-detail-path">'+browserPath.join(' > ')+'</div></div><div class="dish-detail-body"><div class="empty"><i class="ti ti-chef-hat spin"></i><p>Generating recipe for '+dishName+'...</p></div></div></div>';const prompt='You are Bunana. Generate a detailed recipe for: '+dishName+' ('+browserPath.join(' > ')+').\nReturn ONLY valid JSON object, no markdown.\n{"name":"","cuisine":"","time":"","difficulty":"","servings":"","description":"","ingredients":[""],"steps":[""],"nutrition":{"calories":"","protein":"","carbs":"","fat":""},"tip":""}';try{const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:2000,messages:[{role:'user',content:prompt}]})});const data=await res.json();if(res.status===429||res.status===503||(data.error&&/rate.?limit|quota|high demand|overload|temporar|try again|exhaust|unavailable|capacity/i.test(data.error))){const wait=(data.retryAfter||15);content.innerHTML='<div class="dish-detail"><div class="dish-detail-banner"><div class="dish-detail-name">'+dishName+'</div></div><div class="dish-detail-body"><div class="empty"><i class="ti ti-clock spin"></i><p>Gemini is busy \u2014 auto-retrying in <strong id="bRetryCount">'+wait+'</strong>s\u2026</p></div></div></div>';let rem=wait;const t=setInterval(()=>{rem--;const el=document.getElementById('bRetryCount');if(el)el.textContent=rem;if(rem<=0){clearInterval(t);selectDish(dishName);}},1000);return;}if(!res.ok||data.error){throw new Error(data.error||'API error.');}const raw=(data.content||[]).map(b=>b.text||'').join('').replace(/```json|```/g,'').trim();if(!raw){throw new Error('No response from AI.');}let r;try{r=repairAndParseObject(raw);}catch(e){throw new Error('Could not read recipe.');}if(!r)throw new Error('No recipe returned');renderDishDetail(r,dishName);}catch(e){content.innerHTML='<div class="err show">Could not load recipe. Please try again.</div>';}}
 function renderDishDetail(r,dishName){
   const content=document.getElementById('browserContent');
   // Parse base servings
@@ -1014,7 +1014,7 @@ async function generate(){
   try{
     const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'gemini',max_tokens:8192,messages:[{role:'user',content:prompt}]})});
     const data=await res.json();
-    if(res.status===429||(data.error&&/rate.?limit|quota/i.test(data.error))){
+    if(res.status===429||res.status===503||(data.error&&/rate.?limit|quota|high demand|overload|temporar|try again|exhaust|unavailable|capacity/i.test(data.error))){
       startRetryCountdown(data.retryAfter||15);
       return;
     }
@@ -1046,7 +1046,7 @@ function startRetryCountdown(secs){
   errBox.className='err show rate-limit';
   errBox.innerHTML=
     '<i class="ti ti-clock" style="font-size:14px;margin-right:6px;vertical-align:-2px"></i>'+
-    'Free-tier rate limit &mdash; auto-retrying in <strong id="rCountEl">'+remaining+'</strong>s '+
+    'Gemini is busy (free-tier limit or high demand) &mdash; auto-retrying in <strong id="rCountEl">'+remaining+'</strong>s '+
     '<span style="font-size:11px;opacity:.7">(Gemini allows 15 requests/min)</span>'+
     '<div class="retry-bar"><div class="retry-bar-fill" id="retryBarFill" style="width:100%"></div></div>';
   btn.disabled=true;
