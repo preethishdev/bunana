@@ -526,7 +526,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--cream);color:v
       <i class="ti ti-microphone" style="font-size:18px;color:rgba(255,255,255,0.8)" aria-hidden="true"></i>
       <div>
         <div class="cvb-status" id="cvbStatus">Voice mode ready</div>
-        <div class="cvb-hint" id="cvbHint">Say &ldquo;ready&rdquo; when your ingredients are gathered</div>
+        <div class="cvb-hint" id="cvbHint">Name ingredients to tick them &middot; say &ldquo;ready&rdquo; to start</div>
       </div>
     </div>
     <button class="voice-toggle-btn" id="voiceToggleBtn" onclick="toggleCookVoice()">
@@ -751,7 +751,7 @@ function updateProgress(idx){const total=cookSteps.length+1;const done=idx<0?0:c
 function renderCookIntro(dishName){
   cookPhase='intro';
   var _hint=document.getElementById('cvbHint');
-  if(_hint) _hint.textContent='Say “ready” when your ingredients are gathered';
+  if(_hint) _hint.textContent='Name ingredients to tick them · say “ready” to start';
   const body=document.getElementById('cookBody');
   const ratio=currentServings/baseServings;
   const ingHTML=cookIngs.map((ing,i)=>{
@@ -832,6 +832,7 @@ function markStepDone(i){
   btn.classList.add('completed');
   document.getElementById('stamp'+i).style.display='block';
   updateProgress(i);
+  if(i<cookSteps.length-1) currentCookStep=i+1;
   if(i<cookSteps.length-1){
     var next=document.getElementById('sc'+(i+1));
     next.style.opacity='1';
@@ -1220,14 +1221,21 @@ var hasSpeechSynthesis = ('speechSynthesis' in window);
 var SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
 
 // ── TEXT TO SPEECH ──
+var isSpeaking = false;
 function speakText(text, onEnd) {
   if (!hasSpeechSynthesis) { if (onEnd) onEnd(); return; }
   synth.cancel();
+  // CRITICAL: pause recognition so Bunana never hears its own voice
+  if (cookVoiceRecognition) {
+    try { cookVoiceRecognition.abort(); } catch(e) {}
+    cookVoiceRecognition = null;
+  }
+  cookListening = false;
+  isSpeaking = true;
   var utter = new SpeechSynthesisUtterance(text);
   utter.rate = 0.92;
   utter.pitch = 1.0;
   utter.volume = 1.0;
-  // Pick a warm voice if available
   var voices = synth.getVoices();
   var preferred = voices.find(function(v){
     return v.name.indexOf('Samantha') > -1 || v.name.indexOf('Karen') > -1 ||
@@ -1235,7 +1243,17 @@ function speakText(text, onEnd) {
            v.name.indexOf('Google US English') > -1;
   });
   if (preferred) utter.voice = preferred;
-  utter.onend = function() { if (onEnd) onEnd(); };
+  var finished = false;
+  function finish() {
+    if (finished) return;
+    finished = true;
+    isSpeaking = false;
+    if (onEnd) onEnd();
+    // Auto-resume listening after Bunana finishes talking
+    if (voiceEnabled) setTimeout(function(){ startCookListening(currentCookStep); }, 350);
+  }
+  utter.onend = finish;
+  utter.onerror = finish;
   synth.speak(utter);
   currentSpeaking = utter;
 }
@@ -1243,6 +1261,7 @@ function speakText(text, onEnd) {
 function stopSpeaking() {
   if (hasSpeechSynthesis) synth.cancel();
   currentSpeaking = null;
+  isSpeaking = false;
 }
 
 // ── READ INGREDIENT CHECKLIST ALOUD ──
@@ -1253,12 +1272,11 @@ function speakIngredientList(){
   var scaled=cookIngs.map(function(ing){return scaleIngredient(ing,ratio);});
   var text='Here are your '+scaled.length+' ingredient'+(scaled.length!==1?'s':'')+' for '+currentRecipeName+'. ';
   text+=scaled.join('. ')+'. ';
-  text+='When you have everything ready, say "ready" to start cooking!';
+  text+='Say an ingredient name to tick it off, or say "ready" when you have everything!';
   var status=document.getElementById('cvbStatus');
   if(status) status.textContent='Reading ingredients…';
   speakText(text,function(){
-    if(status) status.textContent='Say “ready” to start cooking';
-    if(voiceEnabled&&cookPhase==='intro') startCookListening(0);
+    if(status) status.textContent='Name ingredients to tick them — or say “ready”';
   });
 }
 
@@ -1271,10 +1289,9 @@ function speakStep(i) {
   var ind = document.getElementById('spk'+i);
   if (ind) ind.classList.add('show');
   var text = 'Step '+(i+1)+' of '+cookSteps.length+'. '+cookSteps[i];
+  currentCookStep = i; // set BEFORE speaking so auto-resume listens at right step
   speakText(text, function(){
     if (ind) ind.classList.remove('show');
-    // After speaking, start listening if voice mode is on
-    if (voiceEnabled && cookListening) startCookListening(i);
   });
   currentCookStep = i;
 }
@@ -1520,47 +1537,49 @@ function toggleCookVoice() {
 // ── COOK VOICE RECOGNITION ──
 function startCookListening(stepIndex) {
   if (!voiceEnabled || !hasSpeechRecognition) return;
+  if (isSpeaking) return; // speakText will auto-resume when done
   stopCookListening();
-  
+
   var rec = new SpeechRecognitionAPI();
   rec.continuous = false;
   rec.interimResults = false;
-  rec.lang = navigator.language || 'en-US';
-  
+  rec.lang = 'en-US';
+
   var status = document.getElementById('cvbStatus');
-  
+
   rec.onstart = function() {
     cookListening = true;
-    if (status) status.textContent = 'Listening… say next, repeat or timer';
+    if (status) status.textContent = cookPhase === 'intro'
+      ? 'Listening… name ingredients or say “ready”'
+      : 'Listening… say next, repeat or timer';
     var bar = document.getElementById('cookVoiceBar');
     if (bar) bar.style.background = '#A84A1E';
   };
-  
+
   rec.onresult = function(e) {
+    if (isSpeaking) return; // safety: never process while Bunana is talking
     var cmd = e.results[0][0].transcript.toLowerCase().trim();
-    if (status) status.textContent = 'Heard: "'+cmd+'"';
-    handleCookCommand(cmd, stepIndex);
+    if (status) status.textContent = 'Heard: "' + cmd + '"';
+    handleCookCommand(cmd);
   };
-  
+
   rec.onerror = function(e) {
     cookListening = false;
     if (e.error !== 'no-speech' && e.error !== 'aborted') {
-      if (status) status.textContent = 'Voice error — tap mic to retry';
-    }
-    // Restart listening if voice still enabled
-    if (voiceEnabled && e.error === 'no-speech') {
-      setTimeout(function(){ startCookListening(currentCookStep); }, 500);
+      if (status) status.textContent = 'Voice error — retrying…';
     }
   };
-  
+
   rec.onend = function() {
     cookListening = false;
     var bar = document.getElementById('cookVoiceBar');
     if (bar && voiceEnabled) bar.style.background = 'var(--spice)';
-    // Restart listening after brief pause (continuous loop)
-    if (voiceEnabled) setTimeout(function(){ startCookListening(currentCookStep); }, 800);
+    // Keep the listening loop alive (uses LIVE currentCookStep, not stale closure)
+    if (voiceEnabled && !isSpeaking) {
+      setTimeout(function(){ startCookListening(currentCookStep); }, 600);
+    }
   };
-  
+
   cookVoiceRecognition = rec;
   try { rec.start(); } catch(e) {}
 }
@@ -1574,61 +1593,142 @@ function stopCookListening() {
 }
 
 // ── HANDLE VOICE COMMANDS ──
-function handleCookCommand(cmd, stepIndex) {
+// ── VOICE INGREDIENT TICKING HELPERS ──
+var ING_UNIT_WORDS = ['gram','grams','tsp','tbsp','teaspoon','teaspoons','tablespoon','tablespoons',
+  'cup','cups','can','cans','clove','cloves','large','small','medium','fresh','dried','minced',
+  'diced','sliced','beaten','grated','chopped','thinly','finely','optional','taste','about',
+  'pound','pounds','piece','pieces','whole','ground','freshly','roughly','plus','extra','divided'];
+
+function ingKeyWords(ing) {
+  return ing.toLowerCase()
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .filter(function(w){ return w.length > 2 && ING_UNIT_WORDS.indexOf(w) === -1; });
+}
+
+function voiceTickIngredients(spoken) {
+  var words = spoken.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/)
+    .filter(function(w){ return w.length > 2; });
+  var ticked = [];
+  cookIngs.forEach(function(ing, i) {
+    var item = document.getElementById('ici' + i);
+    if (!item || item.classList.contains('checked')) return;
+    var kws = ingKeyWords(ing);
+    var hit = kws.some(function(k) {
+      return words.some(function(w) {
+        if (w === k) return true;
+        // fuzzy prefix: "tomatoes"~"tomato", "egg"~"eggs" (allow plural-style 1-2 char diff)
+        var a = w.length <= k.length ? w : k, b = w.length <= k.length ? k : w;
+        if (a.length >= 3 && b.indexOf(a) === 0 && (b.length - a.length) <= 2) return true;
+        return false;
+      });
+    });
+    if (hit) {
+      item.classList.add('checked');
+      ticked.push(kws.join(' ') || ing);
+    }
+  });
+  return ticked;
+}
+
+function uncheckedIngCount() {
+  var c = 0;
+  cookIngs.forEach(function(_, i) {
+    var el = document.getElementById('ici' + i);
+    if (el && !el.classList.contains('checked')) c++;
+  });
+  return c;
+}
+
+// ── HANDLE VOICE COMMANDS ──
+function handleCookCommand(cmd) {
   var status = document.getElementById('cvbStatus');
 
-  // ── INGREDIENT CHECKLIST PHASE ──
-  if(cookPhase==='intro'){
-    // User says they have the ingredients — start cooking
-    if(/\b(ready|done|start|next|yes|ok|okay|available|got it|have it|all set|let.?s go|lets cook|start cooking|it.?s here|i have|all good|good to go|proceed|begin)\b/i.test(cmd)){
-      stopSpeaking();
-      if(status) status.textContent='Starting cooking steps!';
-      speakText("Great! Let's start cooking!",function(){renderCookSteps();});
+  // ══ INGREDIENT CHECKLIST PHASE ══
+  if (cookPhase === 'intro') {
+
+    // 1) Try ticking ingredients FIRST ("eggs", "I have tomato and honey")
+    //    so "I have eggs" ticks eggs instead of jumping to cooking
+    var ticked = voiceTickIngredients(cmd);
+    if (ticked.length) {
+      var remaining = uncheckedIngCount();
+      var msg = 'Checked ' + ticked.join(', ') + '. ';
+      if (remaining === 0) {
+        msg += 'All ingredients ready! Say "start cooking" when you want to begin.';
+      } else {
+        msg += remaining + ' more to go.';
+      }
+      if (status) status.textContent = '✓ ' + ticked.join(', ') + (remaining ? ' · ' + remaining + ' left' : ' · all set!');
+      speakText(msg);
       return;
     }
-    // User wants to hear the list again
-    if(/\b(repeat|again|list|ingredients|what do i need|read|say again|hear)\b/i.test(cmd)){
+
+    // 2) Ready to start cooking
+    if (/\b(ready|start|begin|proceed|lets go|let.?s go|lets cook|start cooking|all set|all done|good to go|done|yes|ok|okay)\b/i.test(cmd)) {
+      stopSpeaking();
+      if (status) status.textContent = 'Starting cooking steps!';
+      speakText("Great! Let's start cooking!", function(){ renderCookSteps(); });
+      return;
+    }
+
+    // 3) Tick everything at once
+    if (/\b(check all|tick all|all available|have everything|everything here|got everything|all here)\b/i.test(cmd)) {
+      cookIngs.forEach(function(_, i) {
+        var el = document.getElementById('ici' + i);
+        if (el) el.classList.add('checked');
+      });
+      if (status) status.textContent = 'All ingredients checked ✓';
+      speakText('All ingredients checked! Say "start cooking" to begin.');
+      return;
+    }
+
+    // 4) Hear the list again
+    if (/\b(repeat|again|list|read|what do i need|say again|hear)\b/i.test(cmd)) {
       speakIngredientList();
       return;
     }
-    // Exit
-    if(/\b(exit|quit|leave|cancel|go back|stop)\b/i.test(cmd)){
+
+    // 5) Exit
+    if (/\b(exit|quit|leave|cancel|go back)\b/i.test(cmd)) {
       speakText('Exiting cooking mode.');
-      setTimeout(exitCookMode,1500);
+      setTimeout(exitCookMode, 1500);
       return;
     }
-    // Unknown command — guide the user
-    speakText('Say "ready" when you have all your ingredients, or "repeat" to hear the list again.');
+
+    // 6) Unknown
+    speakText('Say an ingredient name to tick it, "repeat" to hear the list, or "ready" to start cooking.');
     return;
   }
 
-  // ── STEPS PHASE ──
+  // ══ STEPS PHASE ══ (always uses LIVE currentCookStep)
+  var stepIndex = currentCookStep;
+
   // NEXT / DONE — advance step
-  if (/\b(next|done|finished|continue|proceed|move on|step)\b/.test(cmd)) {
+  if (/\b(next|done|finished|continue|proceed|move on)\b/i.test(cmd)) {
     if (status) status.textContent = 'Moving to next step…';
     markStepDone(stepIndex);
     return;
   }
-  
+
   // REPEAT / AGAIN — re-read current step
-  if (/\b(repeat|again|say again|what|pardon|sorry)\b/.test(cmd)) {
-    if (status) status.textContent = 'Repeating step '+(stepIndex+1);
+  if (/\b(repeat|again|say again|what|pardon|sorry)\b/i.test(cmd)) {
+    if (status) status.textContent = 'Repeating step ' + (stepIndex + 1);
     speakStep(stepIndex);
     return;
   }
-  
-  // BACK / PREVIOUS — go to previous step (read it again)
-  if (/\b(back|previous|before|last step)\b/.test(cmd)) {
+
+  // BACK / PREVIOUS
+  if (/\b(back|previous|before|last step)\b/i.test(cmd)) {
     if (stepIndex > 0) {
-      if (status) status.textContent = 'Going back to step '+stepIndex;
-      speakStep(stepIndex-1);
+      if (status) status.textContent = 'Going back to step ' + stepIndex;
+      speakStep(stepIndex - 1);
     } else {
       speakText('You are already at the first step.');
     }
     return;
   }
-  
-  // TIMER — "timer 10 minutes" or "set a timer for 5 minutes"
+
+  // TIMER — "timer 10 minutes"
   var timerMatch = cmd.match(/(\d+)\s*(minute|min|second|sec)/);
   if (timerMatch || /timer|alarm|remind/.test(cmd)) {
     var mins = timerMatch ? parseInt(timerMatch[1]) : 0;
@@ -1637,36 +1737,36 @@ function handleCookCommand(cmd, stepIndex) {
       var secs = unit.indexOf('sec') > -1 ? mins : mins * 60;
       var label = mins + ' ' + (unit.indexOf('sec') > -1 ? 'second' : 'minute') + (mins !== 1 ? 's' : '');
       setVoiceTimer(secs, label);
-      if (status) status.textContent = 'Timer set for '+label;
-      speakText('Timer set for '+label+'. I will let you know when it is done. Keep cooking!');
+      if (status) status.textContent = 'Timer set for ' + label;
+      speakText('Timer set for ' + label + '. I will let you know when it is done. Keep cooking!');
     } else {
       speakText('How many minutes should I set the timer for?');
     }
     return;
   }
-  
-  // INGREDIENTS — "what ingredients do I need"
-  if (/\b(ingredient|what do i need|what should i|shopping)\b/.test(cmd)) {
-    var ingList = cookIngs.slice(0,5).join(', ');
-    speakText('You need: '+ingList+(cookIngs.length > 5 ? ' and more.' : '.'));
+
+  // INGREDIENTS
+  if (/\b(ingredient|what do i need|shopping)\b/i.test(cmd)) {
+    var ingList = cookIngs.slice(0, 5).join(', ');
+    speakText('You need: ' + ingList + (cookIngs.length > 5 ? ' and more.' : '.'));
     return;
   }
-  
-  // STOP / PAUSE — stop speaking
-  if (/\b(stop|pause|quiet|silence|shut up)\b/.test(cmd)) {
+
+  // STOP / PAUSE speech
+  if (/\b(stop|pause|quiet|silence|shut up)\b/i.test(cmd)) {
     stopSpeaking();
     if (status) status.textContent = 'Paused. Say next or repeat to continue.';
     return;
   }
-  
+
   // EXIT
-  if (/\b(exit|quit|leave|go back|cancel)\b/.test(cmd)) {
+  if (/\b(exit|quit|leave|go back|cancel)\b/i.test(cmd)) {
     speakText('Exiting cooking mode.');
     setTimeout(exitCookMode, 1500);
     return;
   }
-  
-  // Unknown command — gentle nudge
+
+  // Unknown command
   speakText('I did not quite catch that. Try saying next, repeat, or timer.');
 }
 
