@@ -526,7 +526,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--cream);color:v
       <i class="ti ti-microphone" style="font-size:18px;color:rgba(255,255,255,0.8)" aria-hidden="true"></i>
       <div>
         <div class="cvb-status" id="cvbStatus">Voice mode ready</div>
-        <div class="cvb-hint">Say &ldquo;next&rdquo;, &ldquo;repeat&rdquo;, &ldquo;timer 10 minutes&rdquo;</div>
+        <div class="cvb-hint" id="cvbHint">Say &ldquo;ready&rdquo; when your ingredients are gathered</div>
       </div>
     </div>
     <button class="voice-toggle-btn" id="voiceToggleBtn" onclick="toggleCookVoice()">
@@ -749,6 +749,9 @@ function startCookMode(recipe){
 function exitCookMode(){document.getElementById('cookOverlay').classList.remove('open');document.body.style.overflow='';}
 function updateProgress(idx){const total=cookSteps.length+1;const done=idx<0?0:cookDone.filter(Boolean).length+1;document.getElementById('progressFill').style.width=Math.round((done/total)*100)+'%';document.getElementById('progressLabel').textContent=idx<0?'Step 0 of '+cookSteps.length+' — Check ingredients':'Step '+(idx+1)+' of '+cookSteps.length;}
 function renderCookIntro(dishName){
+  cookPhase='intro';
+  var _hint=document.getElementById('cvbHint');
+  if(_hint) _hint.textContent='Say “ready” when your ingredients are gathered';
   const body=document.getElementById('cookBody');
   const ratio=currentServings/baseServings;
   const ingHTML=cookIngs.map((ing,i)=>{
@@ -772,6 +775,8 @@ function renderCookIntro(dishName){
     '<div class="lbl" style="margin-bottom:10px">Ingredients checklist</div>'+
     '<ul class="ing-check-list" id="ingCheckList">'+ingHTML+'</ul>'+
     '<button class="start-cook-btn" onclick="renderCookSteps()"><i class="ti ti-arrow-right"></i> All ready \u2014 start cooking!</button>';
+  // Auto-read ingredients if voice is already enabled
+  if(voiceEnabled) setTimeout(speakIngredientList,700);
 }
 
 function changeServings(delta){
@@ -793,6 +798,9 @@ function setServings(val){
 }
 function toggleIngCheck(i){document.getElementById('ici'+i).classList.toggle('checked');}
 function renderCookSteps(){
+  cookPhase='steps';
+  var _hint=document.getElementById('cvbHint');
+  if(_hint) _hint.textContent='Say “next”, “repeat” or “timer X minutes”';
   var body=document.getElementById('cookBody');
   updateProgress(0);
   var html='';
@@ -1198,6 +1206,7 @@ function revealPhoto(btn,wrapId,imgId,loadId,recipeName){btn.style.display='none
 // ── SHARED STATE ──
 var voiceEnabled = false;
 var cookListening = false;
+var cookPhase = 'intro'; // 'intro'=checklist page | 'steps'=cooking
 var synth = window.speechSynthesis;
 var currentSpeaking = null;
 var cookVoiceRecognition = null;
@@ -1234,6 +1243,23 @@ function speakText(text, onEnd) {
 function stopSpeaking() {
   if (hasSpeechSynthesis) synth.cancel();
   currentSpeaking = null;
+}
+
+// ── READ INGREDIENT CHECKLIST ALOUD ──
+function speakIngredientList(){
+  stopSpeaking();
+  if(!cookIngs.length){speakText('No ingredients listed.');return;}
+  var ratio=currentServings/baseServings;
+  var scaled=cookIngs.map(function(ing){return scaleIngredient(ing,ratio);});
+  var text='Here are your '+scaled.length+' ingredient'+(scaled.length!==1?'s':'')+' for '+currentRecipeName+'. ';
+  text+=scaled.join('. ')+'. ';
+  text+='When you have everything ready, say "ready" to start cooking!';
+  var status=document.getElementById('cvbStatus');
+  if(status) status.textContent='Reading ingredients…';
+  speakText(text,function(){
+    if(status) status.textContent='Say “ready” to start cooking';
+    if(voiceEnabled&&cookPhase==='intro') startCookListening(0);
+  });
 }
 
 // ── SPEAK A COOKING STEP ──
@@ -1474,7 +1500,12 @@ function toggleCookVoice() {
     bar.style.background = 'var(--spice)';
     status.textContent = 'Voice mode active — I am listening';
     // Speak the current step
-    speakText('Voice mode enabled. I will guide you through each step. Say next, repeat, or done to navigate.');
+    if(cookPhase==='intro'){
+      speakText('Voice mode enabled. Let me read your ingredients.',speakIngredientList);
+    }else{
+      speakText('Voice mode enabled. I will guide you through each step. Say next, repeat, or done to navigate.');
+      speakStep(currentCookStep);
+    }
     startCookListening(currentCookStep);
   } else {
     btn.classList.remove('active');
@@ -1545,7 +1576,33 @@ function stopCookListening() {
 // ── HANDLE VOICE COMMANDS ──
 function handleCookCommand(cmd, stepIndex) {
   var status = document.getElementById('cvbStatus');
-  
+
+  // ── INGREDIENT CHECKLIST PHASE ──
+  if(cookPhase==='intro'){
+    // User says they have the ingredients — start cooking
+    if(/\b(ready|done|start|next|yes|ok|okay|available|got it|have it|all set|let.?s go|lets cook|start cooking|it.?s here|i have|all good|good to go|proceed|begin)\b/i.test(cmd)){
+      stopSpeaking();
+      if(status) status.textContent='Starting cooking steps!';
+      speakText("Great! Let's start cooking!",function(){renderCookSteps();});
+      return;
+    }
+    // User wants to hear the list again
+    if(/\b(repeat|again|list|ingredients|what do i need|read|say again|hear)\b/i.test(cmd)){
+      speakIngredientList();
+      return;
+    }
+    // Exit
+    if(/\b(exit|quit|leave|cancel|go back|stop)\b/i.test(cmd)){
+      speakText('Exiting cooking mode.');
+      setTimeout(exitCookMode,1500);
+      return;
+    }
+    // Unknown command — guide the user
+    speakText('Say "ready" when you have all your ingredients, or "repeat" to hear the list again.');
+    return;
+  }
+
+  // ── STEPS PHASE ──
   // NEXT / DONE — advance step
   if (/\b(next|done|finished|continue|proceed|move on|step)\b/.test(cmd)) {
     if (status) status.textContent = 'Moving to next step…';
