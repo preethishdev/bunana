@@ -615,7 +615,7 @@ function repairAndParseObject(raw){
   return JSON.parse(repairJSON(m[0]));
 }
 
-async function selectDish(dishName){const content=document.getElementById('browserContent');content.innerHTML='<div class="dish-detail"><div class="dish-detail-banner"><div class="dish-detail-name">'+dishName+'</div><div class="dish-detail-path">'+browserPath.join(' > ')+'</div></div><div class="dish-detail-body"><div class="empty"><i class="ti ti-chef-hat spin"></i><p>Generating recipe for '+dishName+'...</p></div></div></div>';const prompt='You are Bunana. Generate a detailed recipe for: '+dishName+' ('+browserPath.join(' > ')+').\nReturn ONLY valid JSON object, no markdown.\n{"name":"","cuisine":"","time":"","difficulty":"","servings":"","description":"","ingredients":[""],"steps":[""],"nutrition":{"calories":"","protein":"","carbs":"","fat":""},"tip":""}';try{const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:2000,messages:[{role:'user',content:prompt}]})});const data=await res.json();if(res.status===429||res.status===503||(data.error&&/rate.?limit|quota|high demand|overload|temporar|try again|exhaust|unavailable|capacity/i.test(data.error))){const wait=(data.retryAfter||15);content.innerHTML='<div class="dish-detail"><div class="dish-detail-banner"><div class="dish-detail-name">'+dishName+'</div></div><div class="dish-detail-body"><div class="empty"><i class="ti ti-clock spin"></i><p>Gemini is busy \u2014 auto-retrying in <strong id="bRetryCount">'+wait+'</strong>s\u2026</p></div></div></div>';let rem=wait;const t=setInterval(()=>{rem--;const el=document.getElementById('bRetryCount');if(el)el.textContent=rem;if(rem<=0){clearInterval(t);selectDish(dishName);}},1000);return;}if(!res.ok||data.error){throw new Error(data.error||'API error.');}const raw=(data.content||[]).map(b=>b.text||'').join('').replace(/```json|```/g,'').trim();if(!raw){throw new Error('No response from AI.');}let r;try{r=repairAndParseObject(raw);}catch(e){throw new Error('Could not read recipe.');}if(!r)throw new Error('No recipe returned');renderDishDetail(r,dishName);}catch(e){content.innerHTML='<div class="err show">Could not load recipe. Please try again.</div>';}}
+async function selectDish(dishName){const content=document.getElementById('browserContent');content.innerHTML='<div class="dish-detail"><div class="dish-detail-banner"><div class="dish-detail-name">'+dishName+'</div><div class="dish-detail-path">'+browserPath.join(' > ')+'</div></div><div class="dish-detail-body"><div class="empty"><i class="ti ti-chef-hat spin"></i><p>Generating recipe for '+dishName+'...</p></div></div></div>';const prompt='You are Bunana. Generate a detailed recipe for: '+dishName+' ('+browserPath.join(' > ')+').\nReturn ONLY valid JSON object, no markdown.\n{"name":"","cuisine":"","time":"","difficulty":"","servings":"","description":"","ingredients":[""],"steps":[""],"nutrition":{"calories":"","protein":"","carbs":"","fat":""},"tip":""}';try{const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'gemini',max_tokens:2000,messages:[{role:'user',content:prompt}]})});const data=await res.json();if(res.status===429||res.status===503||(data.error&&/rate.?limit|quota|high demand|overload|temporar|try again|exhaust|unavailable|capacity/i.test(data.error))){const wait=(data.retryAfter||15);content.innerHTML='<div class="dish-detail"><div class="dish-detail-banner"><div class="dish-detail-name">'+dishName+'</div></div><div class="dish-detail-body"><div class="empty"><i class="ti ti-clock spin"></i><p>Gemini is busy \u2014 auto-retrying in <strong id="bRetryCount">'+wait+'</strong>s\u2026</p></div></div></div>';let rem=wait;const t=setInterval(()=>{rem--;const el=document.getElementById('bRetryCount');if(el)el.textContent=rem;if(rem<=0){clearInterval(t);selectDish(dishName);}},1000);return;}if(!res.ok||data.error){throw new Error(data.error||'API error.');}const raw=(data.content||[]).map(b=>b.text||'').join('').replace(/```json|```/g,'').trim();if(!raw){throw new Error('No response from AI.');}let r;try{r=repairAndParseObject(raw);}catch(e){throw new Error('Could not read recipe.');}if(!r)throw new Error('No recipe returned');renderDishDetail(r,dishName);}catch(e){content.innerHTML='<div class="err show">Could not load recipe. Please try again.</div>';}}
 function renderDishDetail(r,dishName){
   const content=document.getElementById('browserContent');
   // Parse base servings
@@ -897,7 +897,7 @@ async function flushTranslateQueue() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: 'gemini',
         max_tokens: 200,
         messages: [{ role: 'user', content: prompt }]
       })
@@ -1918,30 +1918,6 @@ function removeUnconfirmed(btn) {
 }
 
 updateCounter();loadPantry();renderBrowser();
-// ── JSON REPAIR ──
-function repairJSON(str){
-  str=str.replace(/```json|```/g,"").trim();
-  str=str.replace(/,\s*([\]\}])/g,"$1");
-  var ob=0,cb=0,oo=0,co=0;
-  for(var i=0;i<str.length;i++){var c=str[i];if(c==="[")ob++;else if(c==="]")cb++;else if(c==="{")oo++;else if(c==="}")co++;}
-  while(co<oo){str+="}";co++;}
-  while(cb<ob){str+="]";cb++;}
-  return str;
-}
-function repairAndParseArray(raw){
-  var s=repairJSON(raw);
-  try{var r=JSON.parse(s);if(Array.isArray(r))return r;}catch(e){}
-  var m=s.match(/\[[\s\S]*\]/);
-  if(!m)throw new Error("No array");
-  return JSON.parse(repairJSON(m[0]));
-}
-function repairAndParseObject(raw){
-  var s=repairJSON(raw);
-  try{var r=JSON.parse(s);if(r&&typeof r==="object"&&!Array.isArray(r))return r;}catch(e){}
-  var m=s.match(/\{[\s\S]*\}/);
-  if(!m)throw new Error("No object");
-  return JSON.parse(repairJSON(m[0]));
-}
 
 
 
